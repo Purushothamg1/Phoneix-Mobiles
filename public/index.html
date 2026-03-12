@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phoneix Mobiles ERP</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f6f8fb; }
+    header { background: #111827; color: white; padding: 12px 20px; }
+    main { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+    section { background:white; border-radius:10px; padding:14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    input, button, select, textarea { width: 100%; margin: 5px 0; padding: 8px; }
+    button { background:#2563eb; color:white; border:none; border-radius:6px; cursor:pointer; }
+    ul { padding-left: 16px; }
+    .badge { background:#fef3c7; color:#92400e; padding:2px 6px; border-radius:999px; font-size:12px; }
+  </style>
+</head>
+<body>
+  <header><h2>Phoneix Mobiles Billing, Inventory & Repair Management</h2></header>
+  <main>
+    <section>
+      <h3>Unified Invoice Screen</h3>
+      <input id="customerName" placeholder="Customer Name" />
+      <input id="customerPhone" placeholder="Customer Phone" />
+      <textarea id="invoiceLines" rows="5" placeholder='Invoice lines JSON [{"productId":"...","qty":1}]'></textarea>
+      <input id="discount" type="number" placeholder="Discount" value="0" />
+      <input id="payments" placeholder="Payments (comma separated e.g. cash,upi)" value="cash" />
+      <button id="createInvoice">Create Invoice + PDF + WhatsApp Link</button>
+      <pre id="invoiceResult"></pre>
+    </section>
+
+    <section>
+      <h3>Add Product / Inventory</h3>
+      <input id="productName" placeholder="Product Name" />
+      <input id="productPrice" type="number" placeholder="Price" />
+      <input id="productStock" type="number" placeholder="Stock Qty" />
+      <button id="addProduct">Add Product</button>
+      <ul id="products"></ul>
+    </section>
+
+    <section>
+      <h3>Repair Ticket</h3>
+      <input id="repairDevice" placeholder="Device" />
+      <input id="repairIssue" placeholder="Issue" />
+      <input id="repairCustomerId" placeholder="Customer ID (optional)" />
+      <input id="repairServiceCost" type="number" placeholder="Service Cost" />
+      <button id="addRepair">Create Repair</button>
+      <ul id="repairs"></ul>
+    </section>
+
+    <section>
+      <h3>Dashboard + Low Stock Alerts <span class="badge" id="syncStatus">offline-ready</span></h3>
+      <button id="refreshDashboard">Refresh Dashboard</button>
+      <pre id="dashboard"></pre>
+      <h4>Offline Sync Queue</h4>
+      <button id="flushSync">Push Local Queue to Server</button>
+      <pre id="syncLog"></pre>
+    </section>
+  </main>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
