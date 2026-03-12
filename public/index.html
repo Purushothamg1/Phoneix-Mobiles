@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phoneix Mobiles ERP v3</title>
+  <style>
+    body{font-family:Arial,sans-serif;margin:0;background:#f6f8fb}header{background:#111827;color:#fff;padding:10px 16px}
+    main{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;padding:14px}section{background:#fff;border-radius:10px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}input,button,select,textarea{width:100%;padding:8px;margin:4px 0}
+    button{background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer}table{width:100%;border-collapse:collapse}
+    td,th{border-bottom:1px solid #e5e7eb;padding:6px;text-align:left}.muted{color:#6b7280;font-size:12px}
+  </style>
+</head>
+<body>
+<header><h2>Phoneix Mobiles ERP - Billing, Repair, Inventory, Settings</h2></header>
+<main>
+<section>
+  <h3>Access + Global Settings</h3>
+  <input id="apiKey" placeholder="X-API-Key" value="admin-key" />
+  <div class="row"><input id="shopName" placeholder="Shop Name" /><input id="invoicePrefix" placeholder="Invoice Prefix" /></div>
+  <div class="row"><input id="taxRate" type="number" step="0.01" placeholder="Default Tax Rate" /><input id="lowStockDefault" type="number" placeholder="Low Stock Threshold" /></div>
+  <button id="loadSettings">Load Settings</button>
+  <button id="saveSettings">Save Settings</button>
+  <pre id="settingsOut"></pre>
+
+  <h3>Unified Invoice</h3>
+  <div class="row"><input id="customerName" placeholder="Customer Name" /><input id="customerPhone" placeholder="Customer Phone" /></div>
+  <div class="row"><input id="productSearch" placeholder="Search product" /><button id="refreshProducts">Refresh Products</button></div>
+  <div class="row"><select id="productSelect"></select><input id="lineQty" type="number" value="1" min="1" /></div>
+  <button id="addLine">Add Line</button>
+  <table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th><th></th></tr></thead><tbody id="invoiceLines"></tbody></table>
+  <div class="row"><input id="discount" type="number" value="0" /><input id="payments" value="cash" /></div>
+  <p class="muted" id="totals">Subtotal: 0 | Tax: 0 | Total: 0</p>
+  <button id="createInvoice">Complete Invoice</button>
+  <pre id="invoiceResult"></pre>
+</section>
+<section>
+  <h3>Inventory + Repairs + Reports</h3>
+  <h4>Add Product</h4>
+  <div class="row"><input id="productName" placeholder="Product Name" /><input id="barcode" placeholder="Barcode" /></div>
+  <div class="row"><input id="productPrice" type="number" placeholder="Price" /><input id="productStock" type="number" placeholder="Stock" /></div>
+  <button id="addProduct">Add Product</button>
+  <h4>Stock Adjustment</h4>
+  <div class="row"><select id="adjustProduct"></select><input id="adjustDelta" type="number" placeholder="+/- qty" /></div>
+  <input id="adjustReason" placeholder="Reason" /><button id="adjustStock">Apply Adjustment</button>
+
+  <h4>Create Repair</h4>
+  <input id="repairDevice" placeholder="Device" /><input id="repairIssue" placeholder="Issue" /><input id="repairServiceCost" type="number" placeholder="Service Cost" />
+  <button id="addRepair">Create Repair</button>
+  <ul id="repairs"></ul>
+
+  <button id="refreshDashboard">Refresh Dashboard</button><pre id="dashboard"></pre>
+  <button id="salesReport">Sales Report (30 days)</button><pre id="reportOut"></pre>
+</section>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
