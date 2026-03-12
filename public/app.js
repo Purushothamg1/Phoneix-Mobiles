@@ -2,8 +2,16 @@ const q = (id) => document.getElementById(id);
 let products = [];
 let invoiceLines = [];
 
+function getApiKey() {
+  return q('apiKey').value.trim();
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (path.startsWith('/api/') && path !== '/api/health' && path !== '/api/ready' && path !== '/api/metrics') {
+    headers['X-API-Key'] = getApiKey();
+  }
+  const res = await fetch(path, { ...opts, headers });
   const text = await res.text();
   if (!res.ok) throw new Error(text || `Request failed: ${res.status}`);
   if (!text) return {};
@@ -12,7 +20,7 @@ async function api(path, opts = {}) {
 
 function enqueueOffline(action) {
   const queue = JSON.parse(localStorage.getItem('syncQueue') || '[]');
-  queue.push({ ...action, queuedAt: new Date().toISOString() });
+  queue.push({ ...action, clientOpId: crypto.randomUUID(), queuedAt: new Date().toISOString() });
   localStorage.setItem('syncQueue', JSON.stringify(queue));
 }
 
@@ -26,21 +34,8 @@ function calcTotals() {
 }
 
 function renderInvoiceLines() {
-  q('invoiceLines').innerHTML = invoiceLines.map((line, i) => `
-    <tr>
-      <td>${line.name}</td>
-      <td>${line.qty}</td>
-      <td>${line.price}</td>
-      <td>${(line.qty * line.price).toFixed(2)}</td>
-      <td><button data-i="${i}" class="rm">x</button></td>
-    </tr>`).join('');
-  document.querySelectorAll('.rm').forEach((btn) => {
-    btn.onclick = () => {
-      invoiceLines.splice(Number(btn.dataset.i), 1);
-      renderInvoiceLines();
-      calcTotals();
-    };
-  });
+  q('invoiceLines').innerHTML = invoiceLines.map((line, i) => `<tr><td>${line.name}</td><td>${line.qty}</td><td>${line.price}</td><td>${(line.qty * line.price).toFixed(2)}</td><td><button data-i="${i}" class="rm">x</button></td></tr>`).join('');
+  document.querySelectorAll('.rm').forEach((btn) => btn.onclick = () => { invoiceLines.splice(Number(btn.dataset.i), 1); renderInvoiceLines(); calcTotals(); });
 }
 
 async function loadProducts() {
@@ -51,113 +46,56 @@ async function loadProducts() {
 
 async function loadRepairs() {
   const repairs = await api('/api/repairs');
-  q('repairs').innerHTML = repairs.slice(-8).reverse().map((r) => `
-    <li>${r.device} (${r.status}) - ₹${r.total}
-      <button data-id="${r.id}" class="job">Job Card</button>
-      <button data-id="${r.id}" class="inv">Invoice</button>
-    </li>`).join('');
-
-  document.querySelectorAll('.job').forEach((btn) => {
-    btn.onclick = async () => {
-      const data = await api(`/api/repairs/${btn.dataset.id}/job-card`, { method: 'POST' });
-      alert(`Job card generated: ${data.relativePath}`);
-    };
-  });
-
-  document.querySelectorAll('.inv').forEach((btn) => {
-    btn.onclick = async () => {
-      const invoice = await api('/api/repairs/create-invoice', { method: 'POST', body: JSON.stringify({ repairId: btn.dataset.id }) });
-      alert(`Repair invoice created: ${invoice.id}`);
-    };
-  });
+  q('repairs').innerHTML = repairs.slice(-8).reverse().map((r) => `<li>${r.device} (${r.status}) - ₹${r.total} <button data-id="${r.id}" class="job">Job Card</button> <button data-id="${r.id}" class="inv">Invoice</button></li>`).join('');
+  document.querySelectorAll('.job').forEach((btn) => btn.onclick = async () => alert(`Job card: ${(await api(`/api/repairs/${btn.dataset.id}/job-card`, { method: 'POST' })).relativePath}`));
+  document.querySelectorAll('.inv').forEach((btn) => btn.onclick = async () => alert(`Repair invoice: ${(await api('/api/repairs/create-invoice', { method: 'POST', body: JSON.stringify({ repairId: btn.dataset.id }) })).id}`));
 }
 
 q('refreshProducts').onclick = loadProducts;
 q('productSearch').oninput = () => loadProducts().catch(() => {});
 q('discount').oninput = calcTotals;
-
 q('addLine').onclick = () => {
-  const selected = products.find((p) => p.id === q('productSelect').value);
-  if (!selected) return;
-  const qty = Number(q('lineQty').value || 1);
-  invoiceLines.push({ productId: selected.id, name: selected.name, qty, price: Number(selected.price) });
-  renderInvoiceLines();
-  calcTotals();
+  const p = products.find((x) => x.id === q('productSelect').value);
+  if (!p) return;
+  invoiceLines.push({ productId: p.id, name: p.name, qty: Number(q('lineQty').value || 1), price: Number(p.price) });
+  renderInvoiceLines(); calcTotals();
 };
 
 q('addProduct').onclick = async () => {
-  const payload = {
-    name: q('productName').value,
-    barcode: q('barcode').value,
-    price: Number(q('productPrice').value || 0),
-    stockQty: Number(q('productStock').value || 0)
-  };
-  try {
-    await api('/api/products', { method: 'POST', body: JSON.stringify(payload) });
-  } catch {
-    enqueueOffline({ entity: 'products', operation: 'upsert', record: payload });
-  }
+  const payload = { name: q('productName').value, barcode: q('barcode').value, price: Number(q('productPrice').value || 0), stockQty: Number(q('productStock').value || 0) };
+  try { await api('/api/products', { method: 'POST', body: JSON.stringify(payload) }); }
+  catch { enqueueOffline({ entity: 'products', operation: 'upsert', record: { ...payload, id: crypto.randomUUID(), updatedAt: new Date().toISOString() } }); }
   await loadProducts();
 };
 
 q('addRepair').onclick = async () => {
-  const payload = {
-    device: q('repairDevice').value,
-    issue: q('repairIssue').value,
-    serviceCost: Number(q('repairServiceCost').value || 0),
-    parts: []
-  };
-  try {
-    await api('/api/repairs', { method: 'POST', body: JSON.stringify(payload) });
-  } catch {
-    enqueueOffline({ entity: 'repairs', operation: 'upsert', record: payload });
-  }
+  const payload = { device: q('repairDevice').value, issue: q('repairIssue').value, serviceCost: Number(q('repairServiceCost').value || 0), parts: [] };
+  try { await api('/api/repairs', { method: 'POST', body: JSON.stringify(payload) }); }
+  catch { enqueueOffline({ entity: 'repairs', operation: 'upsert', record: { ...payload, id: crypto.randomUUID(), updatedAt: new Date().toISOString() } }); }
   await loadRepairs();
 };
 
 q('createInvoice').onclick = async () => {
   let paymentMethods;
   const raw = q('payments').value.trim();
-  try {
-    paymentMethods = raw.startsWith('[') ? JSON.parse(raw) : raw.split(',').map((x) => x.trim()).filter(Boolean);
-  } catch {
-    paymentMethods = ['cash'];
-  }
-
-  const payload = {
-    customer: { name: q('customerName').value, phone: q('customerPhone').value },
-    lines: invoiceLines.map((l) => ({ productId: l.productId, qty: l.qty })),
-    discount: Number(q('discount').value || 0),
-    paymentMethods
-  };
-
+  try { paymentMethods = raw.startsWith('[') ? JSON.parse(raw) : raw.split(',').map((x) => x.trim()).filter(Boolean); } catch { paymentMethods = ['cash']; }
+  const payload = { customer: { name: q('customerName').value, phone: q('customerPhone').value }, lines: invoiceLines.map((l) => ({ productId: l.productId, qty: l.qty })), discount: Number(q('discount').value || 0), paymentMethods };
   try {
     const invoice = await api('/api/invoices', { method: 'POST', body: JSON.stringify(payload) });
     q('invoiceResult').textContent = JSON.stringify(invoice, null, 2);
-    invoiceLines = [];
-    renderInvoiceLines();
-    calcTotals();
-    await loadProducts();
+    invoiceLines = []; renderInvoiceLines(); calcTotals(); await loadProducts();
   } catch (e) {
-    enqueueOffline({ entity: 'invoices', operation: 'upsert', record: payload });
-    q('invoiceResult').textContent = `Offline queued or failed: ${e.message}`;
+    enqueueOffline({ entity: 'invoices', operation: 'upsert', record: { ...payload, id: crypto.randomUUID(), updatedAt: new Date().toISOString() } });
+    q('invoiceResult').textContent = `Queued/failed: ${e.message}`;
   }
 };
 
-q('refreshDashboard').onclick = async () => {
-  q('dashboard').textContent = JSON.stringify(await api('/api/dashboard'), null, 2);
-};
-
+q('refreshDashboard').onclick = async () => q('dashboard').textContent = JSON.stringify(await api('/api/dashboard'), null, 2);
 q('flushSync').onclick = async () => {
   const events = JSON.parse(localStorage.getItem('syncQueue') || '[]');
-  if (!events.length) return (q('syncLog').textContent = 'No pending events');
-  try {
-    const out = await api('/api/sync/push', { method: 'POST', body: JSON.stringify({ events }) });
-    localStorage.setItem('syncQueue', '[]');
-    q('syncLog').textContent = JSON.stringify(out, null, 2);
-  } catch (e) {
-    q('syncLog').textContent = `Sync failed: ${e.message}`;
-  }
+  if (!events.length) return q('syncLog').textContent = 'No pending events';
+  try { const out = await api('/api/sync/push', { method: 'POST', body: JSON.stringify({ events }) }); localStorage.setItem('syncQueue', '[]'); q('syncLog').textContent = JSON.stringify(out, null, 2); }
+  catch (e) { q('syncLog').textContent = `Sync failed: ${e.message}`; }
 };
 
 window.addEventListener('load', async () => {

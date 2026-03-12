@@ -1,15 +1,22 @@
-# Phoneix Mobiles - Billing, Inventory, Repair Management
+# Phoneix Mobiles - Billing, Inventory, Repair Management (v2)
 
-Hardened single-service Node.js application for mobile retail + repair operations.
+Production-hardened modular Node.js system for mobile retail and repair operations.
 
-## Implemented Capabilities
+## Architecture
 
-- Unified billing workflow with line-item building, customer auto-create, discount/tax math, payment split validation, stock deductions, and stock movement logs.
-- Inventory management with create/read/update/delete, low-stock thresholds, and search by name/SKU/barcode.
-- Repair management with create/read/update/delete, parts + service cost totals, job-card generation, and one-click repair-to-invoice conversion.
-- CRM with customer CRUD and customer history endpoint (purchase + repair summary).
-- Offline-first client queue with sync push API and pull API with LWW (`updatedAt`) conflict policy.
-- Invoice PDF-like artifact generation and WhatsApp deep-link generation.
+- Modular backend (`src/lib/*`, `src/routes/*`) with separated config, auth, db, audit, PDF, and domain services.
+- File-backed datastore for local deployability, now with backup/restore and audit trails.
+- Role-based API access via `X-API-Key` (`admin-key`, `cashier-key`, `tech-key` by default).
+- Structured startup logs and operational endpoints.
+
+## Core Capabilities
+
+- Unified invoice flow: customer auto-create, stock-safe line validation, tax/discount totals, payment split validation, stock movement logs.
+- Repair lifecycle: create tickets, job-card generation, one-click repair-to-invoice, status progression.
+- Inventory + CRM: product search by name/SKU/barcode, customer history, low-stock insights.
+- Sync: pull by timestamp, push with LWW conflict resolution and duplicate op suppression via `clientOpId`.
+- Artifacts: standards-compliant minimal PDF invoices and text job cards.
+- Operations: `/api/ready`, `/api/metrics`, `/api/admin/backup`, `/api/admin/restore`, `/api/audit-logs`.
 
 ## Run
 
@@ -17,21 +24,18 @@ Hardened single-service Node.js application for mobile retail + repair operation
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000` and use an API key in the UI access field.
 
 ## API Overview
 
-- `POST /api/products`, `GET /api/products?q=`, `PATCH/DELETE /api/products/:id`
-- `POST /api/customers`, `GET /api/customers`, `PATCH/DELETE /api/customers/:id`
-- `GET /api/customers/:id/history`
-- `POST /api/repairs`, `GET /api/repairs`, `PATCH/DELETE /api/repairs/:id`
-- `POST /api/repairs/:id/job-card`
-- `POST /api/repairs/create-invoice`
-- `POST /api/invoices`, `GET /api/invoices`
-- `GET /api/stock-movements`
-- `GET /api/dashboard`
-- `GET /api/sync/pull`, `POST /api/sync/push`
+- Health/ops: `GET /api/health`, `GET /api/ready`, `GET /api/metrics`
+- Products: `POST /api/products`, `GET /api/products?q=`, `PATCH/DELETE /api/products/:id`
+- Customers: `POST /api/customers`, `GET /api/customers`, `GET /api/customers/:id/history`
+- Repairs: `POST /api/repairs`, `GET /api/repairs`, `POST /api/repairs/:id/job-card`, `POST /api/repairs/create-invoice`
+- Invoices: `POST /api/invoices`, `GET /api/invoices`
+- Sync: `GET /api/sync/pull`, `POST /api/sync/push`
+- Admin: `GET /api/admin/backup`, `POST /api/admin/restore`, `GET /api/audit-logs`
 
 ## Deployment
 
-Deploy as a Node service and persist `data/` for records and generated invoice/job-card artifacts.
+Deploy as a Node service; persist `data/` volume for DB, backups, invoice PDFs, and job cards.
