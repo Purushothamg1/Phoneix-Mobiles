@@ -5,58 +5,79 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Phoneix Mobiles ERP</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #f6f8fb; }
-    header { background: #111827; color: white; padding: 12px 20px; }
-    main { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
-    section { background:white; border-radius:10px; padding:14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    input, button, select, textarea { width: 100%; margin: 5px 0; padding: 8px; }
-    button { background:#2563eb; color:white; border:none; border-radius:6px; cursor:pointer; }
-    ul { padding-left: 16px; }
-    .badge { background:#fef3c7; color:#92400e; padding:2px 6px; border-radius:999px; font-size:12px; }
+    body{font-family:Arial,sans-serif;margin:0;background:#f6f8fb}
+    header{background:#111827;color:#fff;padding:10px 16px}
+    main{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:14px}
+    section{background:#fff;border-radius:10px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    input,button,select,textarea{width:100%;padding:8px;margin:4px 0}
+    button{background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer}
+    table{width:100%;border-collapse:collapse}
+    td,th{border-bottom:1px solid #e5e7eb;padding:6px;text-align:left}
+    .muted{color:#6b7280;font-size:12px}
+    .pill{background:#fde68a;padding:2px 8px;border-radius:999px;font-size:12px}
   </style>
 </head>
 <body>
-  <header><h2>Phoneix Mobiles Billing, Inventory & Repair Management</h2></header>
+  <header><h2>Phoneix Mobiles - Billing / Inventory / Repairs</h2></header>
   <main>
     <section>
-      <h3>Unified Invoice Screen</h3>
-      <input id="customerName" placeholder="Customer Name" />
-      <input id="customerPhone" placeholder="Customer Phone" />
-      <textarea id="invoiceLines" rows="5" placeholder='Invoice lines JSON [{"productId":"...","qty":1}]'></textarea>
-      <input id="discount" type="number" placeholder="Discount" value="0" />
-      <input id="payments" placeholder="Payments (comma separated e.g. cash,upi)" value="cash" />
-      <button id="createInvoice">Create Invoice + PDF + WhatsApp Link</button>
+      <h3>Unified Invoice</h3>
+      <div class="row">
+        <input id="customerName" placeholder="Customer Name" />
+        <input id="customerPhone" placeholder="Customer Phone" />
+      </div>
+      <div class="row">
+        <input id="productSearch" placeholder="Search product by name/barcode" />
+        <button id="refreshProducts">Refresh Products</button>
+      </div>
+      <div class="row">
+        <select id="productSelect"></select>
+        <input id="lineQty" type="number" value="1" min="1" />
+      </div>
+      <button id="addLine">Add Line</button>
+      <table>
+        <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th><th></th></tr></thead>
+        <tbody id="invoiceLines"></tbody>
+      </table>
+      <div class="row">
+        <input id="discount" type="number" value="0" placeholder="Discount" />
+        <input id="payments" placeholder='Payment split JSON [{"method":"cash","amount":500}] or "cash,upi"' value='cash' />
+      </div>
+      <p class="muted" id="totals">Subtotal: 0 | Tax: 0 | Total: 0</p>
+      <button id="createInvoice">Complete Invoice</button>
       <pre id="invoiceResult"></pre>
     </section>
 
     <section>
-      <h3>Add Product / Inventory</h3>
-      <input id="productName" placeholder="Product Name" />
-      <input id="productPrice" type="number" placeholder="Price" />
-      <input id="productStock" type="number" placeholder="Stock Qty" />
+      <h3>Inventory & Repairs</h3>
+      <h4>Add Product</h4>
+      <div class="row">
+        <input id="productName" placeholder="Product Name" />
+        <input id="barcode" placeholder="Barcode" />
+      </div>
+      <div class="row">
+        <input id="productPrice" type="number" placeholder="Price" />
+        <input id="productStock" type="number" placeholder="Stock Qty" />
+      </div>
       <button id="addProduct">Add Product</button>
-      <ul id="products"></ul>
-    </section>
 
-    <section>
-      <h3>Repair Ticket</h3>
+      <h4>Create Repair Ticket</h4>
       <input id="repairDevice" placeholder="Device" />
       <input id="repairIssue" placeholder="Issue" />
-      <input id="repairCustomerId" placeholder="Customer ID (optional)" />
       <input id="repairServiceCost" type="number" placeholder="Service Cost" />
       <button id="addRepair">Create Repair</button>
-      <ul id="repairs"></ul>
-    </section>
 
-    <section>
-      <h3>Dashboard + Low Stock Alerts <span class="badge" id="syncStatus">offline-ready</span></h3>
+      <h4>Recent Repairs</h4>
+      <ul id="repairs"></ul>
+
+      <h4>Dashboard <span class="pill" id="syncState">offline-ready</span></h4>
       <button id="refreshDashboard">Refresh Dashboard</button>
       <pre id="dashboard"></pre>
-      <h4>Offline Sync Queue</h4>
-      <button id="flushSync">Push Local Queue to Server</button>
+      <button id="flushSync">Push Offline Queue</button>
       <pre id="syncLog"></pre>
     </section>
   </main>
-  <script src="/app.js" type="module"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

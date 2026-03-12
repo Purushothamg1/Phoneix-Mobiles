@@ -4,14 +4,17 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { URL } from 'node:url';
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
 const ROOT = process.cwd();
 const DATA_FILE = path.join(ROOT, 'data', 'db.json');
 const PDF_DIR = path.join(ROOT, 'data', 'invoices');
+const JOBCARD_DIR = path.join(ROOT, 'data', 'jobcards');
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const TAX_RATE = 0.18;
 
-if (!fs.existsSync(path.dirname(DATA_FILE))) fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
+for (const dir of [path.dirname(DATA_FILE), PDF_DIR, JOBCARD_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
 
 const defaultDb = {
   customers: [],
@@ -22,10 +25,14 @@ const defaultDb = {
   syncEvents: []
 };
 
+const nowIso = () => new Date().toISOString();
+const toNum = (val, fallback = 0) => {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 function loadDb() {
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(defaultDb, null, 2));
-  }
+  if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify(defaultDb, null, 2));
   return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
 }
 
@@ -33,272 +40,430 @@ function saveDb(db) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
 }
 
-function json(res, code, body) {
-  res.writeHead(code, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(body));
+function send(res, code, body, type = 'application/json') {
+  res.writeHead(code, {
+    'Content-Type': type,
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  });
+  res.end(type === 'application/json' ? JSON.stringify(body) : body);
+}
+
+function badRequest(res, message) {
+  return send(res, 400, { error: message });
 }
 
 async function parseBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const raw = Buffer.concat(chunks).toString('utf8');
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('Invalid JSON body');
+  }
+}
+
+function isNonEmptyString(v) {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
+function normalizePhone(phone) {
+  return String(phone || '').replace(/\D/g, '');
 }
 
 function findOrCreateCustomer(db, input) {
-  if (!input?.name) return null;
-  const normalized = input.name.trim().toLowerCase();
-  let existing = db.customers.find((c) => c.name.trim().toLowerCase() === normalized || (input.phone && c.phone === input.phone));
+  if (!isNonEmptyString(input?.name)) return null;
+  const normalizedName = input.name.trim().toLowerCase();
+  const normalizedPhone = normalizePhone(input.phone);
+  let existing = db.customers.find(
+    (c) => c.name.trim().toLowerCase() === normalizedName || (normalizedPhone && normalizePhone(c.phone) === normalizedPhone)
+  );
   if (!existing) {
-    existing = { id: randomUUID(), name: input.name.trim(), phone: input.phone || '', createdAt: new Date().toISOString() };
+    existing = {
+      id: randomUUID(),
+      name: input.name.trim(),
+      phone: input.phone || '',
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      version: 1
+    };
     db.customers.push(existing);
   }
   return existing;
 }
 
-function calculateInvoice(productsMap, lines, discount = 0, taxRate = 0.18) {
-  const detailed = lines.map((line) => {
-    const product = productsMap.get(line.productId);
-    if (!product) throw new Error(`Product ${line.productId} not found`);
-    const qty = Number(line.qty || 0);
-    const price = Number(line.price ?? product.price);
-    const total = qty * price;
-    return { ...line, name: product.name, qty, price, total };
-  });
-  const subtotal = detailed.reduce((sum, i) => sum + i.total, 0);
-  const discountAmount = Math.min(subtotal, Number(discount || 0));
-  const taxable = subtotal - discountAmount;
-  const tax = Number((taxable * taxRate).toFixed(2));
-  const grandTotal = Number((taxable + tax).toFixed(2));
-  return { lines: detailed, subtotal, discountAmount, tax, grandTotal };
+function updateEntity(entity, patch) {
+  Object.assign(entity, patch);
+  entity.updatedAt = nowIso();
+  entity.version = toNum(entity.version, 0) + 1;
 }
 
-function createSimplePdf(invoice, customer) {
-  const text = [
-    'Phoenix Mobiles Invoice',
-    `Invoice: ${invoice.id}`,
-    `Date: ${new Date(invoice.createdAt).toLocaleString('en-IN')}`,
-    `Customer: ${customer?.name || 'Walk-in'} ${customer?.phone || ''}`,
-    '---',
-    ...invoice.lines.map((l) => `${l.name} x ${l.qty} @ ${l.price} = ${l.total}`),
-    '---',
-    `Subtotal: ${invoice.subtotal}`,
-    `Discount: ${invoice.discount}`,
-    `Tax: ${invoice.tax}`,
-    `Total: ${invoice.total}`
-  ].join('\n');
+function calculateInvoice(productMap, lines, discount = 0, taxRate = TAX_RATE) {
+  if (!Array.isArray(lines) || lines.length === 0) throw new Error('Invoice lines are required');
+  const detailed = lines.map((line) => {
+    const product = productMap.get(line.productId);
+    if (!product) throw new Error(`Product ${line.productId} not found`);
+    const qty = toNum(line.qty, 0);
+    if (qty <= 0) throw new Error(`Invalid quantity for ${product.name}`);
+    const price = toNum(line.price ?? product.price, 0);
+    if (price < 0) throw new Error(`Invalid price for ${product.name}`);
+    if (product.stockQty < qty) throw new Error(`Insufficient stock for ${product.name}`);
+    const total = Number((qty * price).toFixed(2));
+    return { productId: product.id, barcode: product.barcode || '', name: product.name, qty, price, total };
+  });
 
-  const content = Buffer.from(text, 'utf8');
-  const pdf = Buffer.concat([
-    Buffer.from('%PDF-1.1\n'),
-    Buffer.from('1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n'),
-    Buffer.from('2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n'),
-    Buffer.from('3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<<>>>>endobj\n'),
-    Buffer.from(`4 0 obj<</Length ${content.length + 20}>>stream\nBT /F1 10 Tf 50 750 Td (`),
-    Buffer.from(text.replace(/\n/g, ') Tj T* ('), 'utf8'),
-    Buffer.from(') Tj ET\nendstream endobj\n'),
-    Buffer.from('xref\n0 5\n0000000000 65535 f \ntrailer<</Size 5/Root 1 0 R>>\nstartxref\n0\n%%EOF')
-  ]);
+  const subtotal = Number(detailed.reduce((sum, item) => sum + item.total, 0).toFixed(2));
+  const discountAmount = Number(Math.min(subtotal, toNum(discount, 0)).toFixed(2));
+  const taxable = subtotal - discountAmount;
+  const tax = Number((taxable * taxRate).toFixed(2));
+  const total = Number((taxable + tax).toFixed(2));
+  return { lines: detailed, subtotal, discountAmount, tax, total };
+}
 
-  const fileName = `invoice-${invoice.id}.pdf`;
+function validatePayments(paymentMethods, total) {
+  const methods = Array.isArray(paymentMethods) ? paymentMethods : [];
+  if (methods.length === 0) return [{ method: 'cash', amount: total }];
+
+  if (typeof methods[0] === 'string') {
+    return methods.map((method, idx) => ({ method, amount: idx === 0 ? total : 0 }));
+  }
+
+  const sum = Number(methods.reduce((s, m) => s + toNum(m.amount, 0), 0).toFixed(2));
+  if (Math.abs(sum - total) > 0.01) throw new Error(`Payment split mismatch. expected ${total}, got ${sum}`);
+  return methods.map((m) => ({ method: m.method, amount: toNum(m.amount, 0) }));
+}
+
+function createPseudoPdf(textContent, fileNamePrefix) {
+  const text = textContent.join('\n');
+  const pdf = Buffer.from(`%PDF-1.1\n% Phoneix pseudo-pdf\n${text}\n%%EOF`, 'utf8');
+  const fileName = `${fileNamePrefix}-${Date.now()}.pdf`;
   const fullPath = path.join(PDF_DIR, fileName);
   fs.writeFileSync(fullPath, pdf);
   return { fileName, fullPath, relativePath: `/invoices/${fileName}` };
 }
 
-function serveStatic(req, res, pathname) {
-  const filePath = pathname === '/' ? path.join(PUBLIC_DIR, 'index.html') : path.join(PUBLIC_DIR, pathname);
-  if (!filePath.startsWith(PUBLIC_DIR) || !fs.existsSync(filePath)) {
-    res.writeHead(404);
-    return res.end('Not found');
-  }
-  const ext = path.extname(filePath);
-  const contentType = {
+function createJobCardFile(repair, customer) {
+  const content = [
+    'PHONEIX MOBILES - JOB CARD',
+    `Ticket ID: ${repair.id}`,
+    `Created: ${repair.createdAt}`,
+    `Status: ${repair.status}`,
+    `Customer: ${customer?.name || 'Walk-in'} (${customer?.phone || 'N/A'})`,
+    `Device: ${repair.device}`,
+    `Issue: ${repair.issue}`,
+    `Parts Cost: ${repair.parts.reduce((s, p) => s + toNum(p.cost, 0), 0)}`,
+    `Service Cost: ${toNum(repair.serviceCost, 0)}`,
+    `Total: ${toNum(repair.total, 0)}`
+  ].join('\n');
+  const fileName = `jobcard-${repair.id}.txt`;
+  const fullPath = path.join(JOBCARD_DIR, fileName);
+  fs.writeFileSync(fullPath, content);
+  return { fileName, fullPath, relativePath: `/jobcards/${fileName}` };
+}
+
+function serveStatic(res, pathname) {
+  const target = pathname === '/' ? 'index.html' : pathname.slice(1);
+  const full = path.join(PUBLIC_DIR, target);
+  if (!full.startsWith(PUBLIC_DIR) || !fs.existsSync(full)) return send(res, 404, { error: 'Not found' });
+  const ext = path.extname(full);
+  const type = {
     '.html': 'text/html',
     '.js': 'text/javascript',
     '.css': 'text/css',
-    '.json': 'application/json'
+    '.json': 'application/json',
+    '.txt': 'text/plain'
   }[ext] || 'application/octet-stream';
-  res.writeHead(200, { 'Content-Type': contentType });
-  res.end(fs.readFileSync(filePath));
+  return send(res, 200, fs.readFileSync(full), type);
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const { pathname, searchParams } = url;
 
+  if (req.method === 'OPTIONS') return send(res, 204, {});
+
   if (pathname.startsWith('/invoices/')) {
-    const filePath = path.join(PDF_DIR, path.basename(pathname));
-    if (!fs.existsSync(filePath)) return json(res, 404, { error: 'Invoice PDF not found' });
-    res.writeHead(200, { 'Content-Type': 'application/pdf' });
-    return res.end(fs.readFileSync(filePath));
+    const file = path.join(PDF_DIR, path.basename(pathname));
+    if (!fs.existsSync(file)) return send(res, 404, { error: 'Invoice PDF not found' });
+    return send(res, 200, fs.readFileSync(file), 'application/pdf');
   }
 
-  if (!pathname.startsWith('/api/')) {
-    return serveStatic(req, res, pathname);
+  if (pathname.startsWith('/jobcards/')) {
+    const file = path.join(JOBCARD_DIR, path.basename(pathname));
+    if (!fs.existsSync(file)) return send(res, 404, { error: 'Job card not found' });
+    return send(res, 200, fs.readFileSync(file), 'text/plain');
   }
+
+  if (!pathname.startsWith('/api/')) return serveStatic(res, pathname);
 
   try {
     const db = loadDb();
 
-    if (pathname === '/api/health') return json(res, 200, { ok: true, now: new Date().toISOString() });
+    if (pathname === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, now: nowIso() });
 
-    if (pathname === '/api/products' && req.method === 'GET') return json(res, 200, db.products);
-    if (pathname === '/api/customers' && req.method === 'GET') return json(res, 200, db.customers);
-    if (pathname === '/api/repairs' && req.method === 'GET') return json(res, 200, db.repairs);
-    if (pathname === '/api/invoices' && req.method === 'GET') return json(res, 200, db.invoices);
-    if (pathname === '/api/stock-movements' && req.method === 'GET') return json(res, 200, db.stockMovements);
+    if (pathname === '/api/products' && req.method === 'GET') {
+      const q = (searchParams.get('q') || '').trim().toLowerCase();
+      if (!q) return send(res, 200, db.products);
+      const filtered = db.products.filter((p) =>
+        p.name.toLowerCase().includes(q) ||
+        String(p.sku || '').toLowerCase().includes(q) ||
+        String(p.barcode || '').toLowerCase().includes(q)
+      );
+      return send(res, 200, filtered);
+    }
 
     if (pathname === '/api/products' && req.method === 'POST') {
       const body = await parseBody(req);
-      const product = { id: randomUUID(), name: body.name, sku: body.sku || '', barcode: body.barcode || '', price: Number(body.price || 0), stockQty: Number(body.stockQty || 0), lowStockThreshold: Number(body.lowStockThreshold || 5), createdAt: new Date().toISOString() };
+      if (!isNonEmptyString(body.name)) return badRequest(res, 'name is required');
+      const product = {
+        id: randomUUID(),
+        name: body.name.trim(),
+        sku: body.sku || '',
+        barcode: body.barcode || '',
+        price: toNum(body.price, 0),
+        stockQty: toNum(body.stockQty, 0),
+        lowStockThreshold: toNum(body.lowStockThreshold, 5),
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        version: 1
+      };
       db.products.push(product);
       saveDb(db);
-      return json(res, 201, product);
+      return send(res, 201, product);
     }
 
     if (pathname.startsWith('/api/products/') && req.method === 'PATCH') {
       const id = pathname.split('/').pop();
       const body = await parseBody(req);
       const product = db.products.find((p) => p.id === id);
-      if (!product) return json(res, 404, { error: 'Not found' });
-      Object.assign(product, body, { updatedAt: new Date().toISOString() });
+      if (!product) return send(res, 404, { error: 'Not found' });
+      const patch = { ...body };
+      if (patch.stockQty != null) patch.stockQty = toNum(patch.stockQty, product.stockQty);
+      if (patch.price != null) patch.price = toNum(patch.price, product.price);
+      updateEntity(product, patch);
       saveDb(db);
-      return json(res, 200, product);
+      return send(res, 200, product);
     }
 
     if (pathname.startsWith('/api/products/') && req.method === 'DELETE') {
       const id = pathname.split('/').pop();
       db.products = db.products.filter((p) => p.id !== id);
       saveDb(db);
-      return json(res, 204, {});
+      return send(res, 204, {});
     }
+
+    if (pathname === '/api/customers' && req.method === 'GET') return send(res, 200, db.customers);
 
     if (pathname === '/api/customers' && req.method === 'POST') {
       const body = await parseBody(req);
-      const customer = { id: randomUUID(), name: body.name, phone: body.phone || '', createdAt: new Date().toISOString() };
+      if (!isNonEmptyString(body.name)) return badRequest(res, 'name is required');
+      const customer = {
+        id: randomUUID(),
+        name: body.name.trim(),
+        phone: body.phone || '',
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        version: 1
+      };
       db.customers.push(customer);
       saveDb(db);
-      return json(res, 201, customer);
+      return send(res, 201, customer);
+    }
+
+    if (pathname.match(/^\/api\/customers\/[^/]+\/history$/) && req.method === 'GET') {
+      const id = pathname.split('/')[3];
+      const invoices = db.invoices.filter((i) => i.customerId === id);
+      const repairs = db.repairs.filter((r) => r.customerId === id);
+      const spend = Number(invoices.reduce((s, i) => s + toNum(i.total, 0), 0).toFixed(2));
+      return send(res, 200, { invoices, repairs, spend, invoiceCount: invoices.length, repairCount: repairs.length });
     }
 
     if (pathname.startsWith('/api/customers/') && req.method === 'PATCH') {
       const id = pathname.split('/').pop();
       const body = await parseBody(req);
       const customer = db.customers.find((c) => c.id === id);
-      if (!customer) return json(res, 404, { error: 'Not found' });
-      Object.assign(customer, body, { updatedAt: new Date().toISOString() });
+      if (!customer) return send(res, 404, { error: 'Not found' });
+      updateEntity(customer, body);
       saveDb(db);
-      return json(res, 200, customer);
+      return send(res, 200, customer);
     }
 
     if (pathname.startsWith('/api/customers/') && req.method === 'DELETE') {
       const id = pathname.split('/').pop();
       db.customers = db.customers.filter((c) => c.id !== id);
       saveDb(db);
-      return json(res, 204, {});
+      return send(res, 204, {});
     }
+
+    if (pathname === '/api/repairs' && req.method === 'GET') return send(res, 200, db.repairs);
 
     if (pathname === '/api/repairs' && req.method === 'POST') {
       const body = await parseBody(req);
+      if (!isNonEmptyString(body.device) || !isNonEmptyString(body.issue)) return badRequest(res, 'device and issue are required');
       const repair = {
         id: randomUUID(),
-        device: body.device,
-        issue: body.issue,
+        device: body.device.trim(),
+        issue: body.issue.trim(),
         customerId: body.customerId || null,
         status: body.status || 'received',
-        parts: body.parts || [],
-        serviceCost: Number(body.serviceCost || 0),
-        total: Number(body.total || 0),
-        createdAt: new Date().toISOString()
+        parts: Array.isArray(body.parts) ? body.parts : [],
+        serviceCost: toNum(body.serviceCost, 0),
+        total: 0,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        version: 1
       };
-      repair.total = repair.parts.reduce((s, p) => s + Number(p.cost || 0), 0) + repair.serviceCost;
+      repair.total = Number((repair.parts.reduce((s, p) => s + toNum(p.cost, 0), 0) + repair.serviceCost).toFixed(2));
       db.repairs.push(repair);
       saveDb(db);
-      return json(res, 201, repair);
+      return send(res, 201, repair);
     }
 
     if (pathname.startsWith('/api/repairs/') && req.method === 'PATCH') {
       const id = pathname.split('/').pop();
       const body = await parseBody(req);
       const repair = db.repairs.find((r) => r.id === id);
-      if (!repair) return json(res, 404, { error: 'Not found' });
-      Object.assign(repair, body, { updatedAt: new Date().toISOString() });
-      repair.total = (repair.parts || []).reduce((s, p) => s + Number(p.cost || 0), 0) + Number(repair.serviceCost || 0);
+      if (!repair) return send(res, 404, { error: 'Not found' });
+      updateEntity(repair, body);
+      repair.total = Number(((repair.parts || []).reduce((s, p) => s + toNum(p.cost, 0), 0) + toNum(repair.serviceCost, 0)).toFixed(2));
       saveDb(db);
-      return json(res, 200, repair);
+      return send(res, 200, repair);
     }
 
     if (pathname.startsWith('/api/repairs/') && req.method === 'DELETE') {
       const id = pathname.split('/').pop();
       db.repairs = db.repairs.filter((r) => r.id !== id);
       saveDb(db);
-      return json(res, 204, {});
+      return send(res, 204, {});
+    }
+
+    if (pathname.match(/^\/api\/repairs\/[^/]+\/job-card$/) && req.method === 'POST') {
+      const id = pathname.split('/')[3];
+      const repair = db.repairs.find((r) => r.id === id);
+      if (!repair) return send(res, 404, { error: 'Repair not found' });
+      const customer = db.customers.find((c) => c.id === repair.customerId);
+      const card = createJobCardFile(repair, customer);
+      repair.jobCardPath = card.relativePath;
+      updateEntity(repair, {});
+      saveDb(db);
+      return send(res, 201, { repairId: repair.id, ...card });
     }
 
     if (pathname === '/api/repairs/create-invoice' && req.method === 'POST') {
       const body = await parseBody(req);
       const repair = db.repairs.find((r) => r.id === body.repairId);
-      if (!repair) return json(res, 404, { error: 'Repair not found' });
+      if (!repair) return send(res, 404, { error: 'Repair not found' });
+      const customer = db.customers.find((c) => c.id === repair.customerId);
+
+      const subtotal = toNum(repair.total, 0);
+      const tax = Number((subtotal * TAX_RATE).toFixed(2));
+      const total = Number((subtotal + tax).toFixed(2));
       const invoice = {
         id: randomUUID(),
         customerId: repair.customerId,
-        lines: [{ productId: 'repair-service', name: `Repair: ${repair.device}`, qty: 1, price: repair.total, total: repair.total }],
-        subtotal: repair.total,
+        lines: [{ productId: 'repair-service', name: `Repair: ${repair.device}`, qty: 1, price: subtotal, total: subtotal }],
+        subtotal,
         discount: 0,
-        tax: Number((repair.total * 0.18).toFixed(2)),
-        total: Number((repair.total * 1.18).toFixed(2)),
-        paymentMethods: ['pending'],
+        tax,
+        total,
+        paymentMethods: [{ method: 'pending', amount: total }],
         sourceRepairId: repair.id,
-        createdAt: new Date().toISOString()
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        version: 1
       };
-      const customer = db.customers.find((c) => c.id === invoice.customerId);
-      const pdfInfo = createSimplePdf(invoice, customer);
+
+      const pdfInfo = createPseudoPdf([
+        'Phoneix Mobiles - Repair Invoice',
+        `Invoice ID: ${invoice.id}`,
+        `Repair ID: ${repair.id}`,
+        `Customer: ${customer?.name || 'Walk-in'}`,
+        `Total: ${invoice.total}`
+      ], 'invoice');
+
       invoice.pdfPath = pdfInfo.relativePath;
       db.invoices.push(invoice);
+      repair.status = 'completed';
+      updateEntity(repair, {});
       saveDb(db);
-      return json(res, 201, invoice);
+      return send(res, 201, invoice);
     }
+
+    if (pathname === '/api/invoices' && req.method === 'GET') return send(res, 200, db.invoices);
 
     if (pathname === '/api/invoices' && req.method === 'POST') {
       const body = await parseBody(req);
       const customer = findOrCreateCustomer(db, body.customer || {});
       const productMap = new Map(db.products.map((p) => [p.id, p]));
-      const calculated = calculateInvoice(productMap, body.lines || [], body.discount || 0);
-      for (const line of calculated.lines) {
+      const calc = calculateInvoice(productMap, body.lines || [], body.discount || 0);
+      const paymentMethods = validatePayments(body.paymentMethods, calc.total);
+
+      for (const line of calc.lines) {
         const product = productMap.get(line.productId);
         product.stockQty -= line.qty;
-        db.stockMovements.push({ id: randomUUID(), productId: product.id, type: 'sale', qty: -line.qty, reference: 'invoice', createdAt: new Date().toISOString() });
+        updateEntity(product, {});
+        db.stockMovements.push({
+          id: randomUUID(),
+          productId: product.id,
+          type: 'sale',
+          qty: -line.qty,
+          unitPrice: line.price,
+          referenceType: 'invoice',
+          createdAt: nowIso()
+        });
       }
+
       const invoice = {
         id: randomUUID(),
         customerId: customer?.id || null,
-        lines: calculated.lines,
-        subtotal: calculated.subtotal,
-        discount: calculated.discountAmount,
-        tax: calculated.tax,
-        total: calculated.grandTotal,
-        paymentMethods: body.paymentMethods || ['cash'],
-        createdAt: new Date().toISOString()
+        lines: calc.lines,
+        subtotal: calc.subtotal,
+        discount: calc.discountAmount,
+        tax: calc.tax,
+        total: calc.total,
+        paymentMethods,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        version: 1
       };
-      const pdfInfo = createSimplePdf(invoice, customer);
+
+      const pdfInfo = createPseudoPdf([
+        'Phoneix Mobiles - Tax Invoice',
+        `Invoice ID: ${invoice.id}`,
+        `Date: ${invoice.createdAt}`,
+        `Customer: ${customer?.name || 'Walk-in'} ${customer?.phone || ''}`,
+        ...invoice.lines.map((l) => `${l.name} x ${l.qty} @ ${l.price} = ${l.total}`),
+        `Subtotal: ${invoice.subtotal}`,
+        `Discount: ${invoice.discount}`,
+        `Tax: ${invoice.tax}`,
+        `Total: ${invoice.total}`
+      ], 'invoice');
+
       invoice.pdfPath = pdfInfo.relativePath;
-      const phone = (customer?.phone || '').replace(/\D/g, '');
-      const message = encodeURIComponent(`Hi ${customer?.name || 'Customer'}, Invoice ${invoice.id} Total ₹${invoice.total}. PDF saved at ${pdfInfo.fullPath}`);
+      const phone = normalizePhone(customer?.phone);
+      const message = encodeURIComponent(`Hi ${customer?.name || 'Customer'}, Invoice ${invoice.id} total ₹${invoice.total}. PDF saved at ${pdfInfo.fullPath}`);
       invoice.whatsappShare = phone ? `https://wa.me/91${phone}?text=${message}` : null;
+
       db.invoices.push(invoice);
       saveDb(db);
-      return json(res, 201, invoice);
+      return send(res, 201, invoice);
     }
 
+    if (pathname === '/api/stock-movements' && req.method === 'GET') return send(res, 200, db.stockMovements);
+
     if (pathname === '/api/dashboard' && req.method === 'GET') {
-      const lowStock = db.products.filter((p) => p.stockQty <= p.lowStockThreshold);
-      const totalSales = db.invoices.reduce((s, i) => s + Number(i.total || 0), 0);
-      return json(res, 200, {
+      const lowStock = db.products.filter((p) => toNum(p.stockQty, 0) <= toNum(p.lowStockThreshold, 5));
+      const totalSales = Number(db.invoices.reduce((s, i) => s + toNum(i.total, 0), 0).toFixed(2));
+      const openRepairs = db.repairs.filter((r) => r.status !== 'completed').length;
+      return send(res, 200, {
         inventoryCount: db.products.length,
         customerCount: db.customers.length,
         repairCount: db.repairs.length,
         invoiceCount: db.invoices.length,
+        openRepairs,
         lowStock,
         totalSales
       });
@@ -312,20 +477,56 @@ const server = http.createServer(async (req, res) => {
         repairs: db.repairs.filter((x) => (x.updatedAt || x.createdAt) > since),
         invoices: db.invoices.filter((x) => (x.updatedAt || x.createdAt) > since)
       };
-      return json(res, 200, { changed, serverTime: new Date().toISOString() });
+      return send(res, 200, { changed, serverTime: nowIso(), resolution: 'lww-timestamp' });
     }
 
     if (pathname === '/api/sync/push' && req.method === 'POST') {
       const body = await parseBody(req);
-      const event = { id: randomUUID(), payload: body, createdAt: new Date().toISOString(), resolution: 'server-wins-on-timestamp' };
+      const events = Array.isArray(body.events) ? body.events : [];
+      const applied = [];
+      const conflicts = [];
+
+      for (const evt of events) {
+        const { entity, operation, record } = evt;
+        if (!entity || !operation || !record?.id) continue;
+        const collection = db[entity];
+        if (!Array.isArray(collection)) continue;
+
+        const idx = collection.findIndex((x) => x.id === record.id);
+        if (operation === 'delete') {
+          if (idx >= 0) {
+            collection.splice(idx, 1);
+            applied.push({ id: record.id, entity, operation });
+          }
+          continue;
+        }
+
+        if (idx < 0) {
+          collection.push(record);
+          applied.push({ id: record.id, entity, operation: 'insert' });
+          continue;
+        }
+
+        const serverRec = collection[idx];
+        const serverTime = serverRec.updatedAt || serverRec.createdAt || '';
+        const clientTime = record.updatedAt || record.createdAt || '';
+        if (clientTime >= serverTime) {
+          collection[idx] = { ...serverRec, ...record };
+          applied.push({ id: record.id, entity, operation: 'upsert' });
+        } else {
+          conflicts.push({ id: record.id, entity, winner: 'server', serverTime, clientTime });
+        }
+      }
+
+      const event = { id: randomUUID(), payload: { eventsCount: events.length }, createdAt: nowIso(), applied, conflicts };
       db.syncEvents.push(event);
       saveDb(db);
-      return json(res, 202, { accepted: true, eventId: event.id });
+      return send(res, 202, { accepted: true, eventId: event.id, applied, conflicts });
     }
 
-    return json(res, 404, { error: 'Route not found' });
+    return send(res, 404, { error: 'Route not found' });
   } catch (error) {
-    return json(res, 500, { error: error.message });
+    return send(res, 500, { error: error.message || 'Unhandled server error' });
   }
 });
 
