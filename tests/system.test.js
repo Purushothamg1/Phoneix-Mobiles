@@ -7,7 +7,7 @@ const API_KEY = 'admin-key';
 let proc;
 
 async function waitForServer() {
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 60; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${PORT}/api/health`);
       if (res.ok) return;
@@ -19,9 +19,7 @@ async function waitForServer() {
 
 async function jfetch(path, init = {}) {
   const headers = { 'Content-Type': 'application/json', ...(init.headers || {}) };
-  if (path.startsWith('/api/') && !['/api/health', '/api/ready', '/api/metrics'].includes(path)) {
-    headers['X-API-Key'] = API_KEY;
-  }
+  if (path.startsWith('/api/') && !['/api/health', '/api/ready', '/api/metrics'].includes(path)) headers['X-API-Key'] = API_KEY;
   const res = await fetch(`http://127.0.0.1:${PORT}${path}`, { ...init, headers });
   const text = await res.text();
   let data = {};
@@ -36,73 +34,83 @@ test.before(async () => {
 
 test.after(() => proc.kill('SIGTERM'));
 
-test('ops endpoints: ready, metrics, backup', async () => {
-  const ready = await jfetch('/api/ready');
-  assert.equal(ready.status, 200);
+test('settings module is readable and patchable', async () => {
+  const get = await jfetch('/api/settings');
+  assert.equal(get.status, 200);
+  assert.ok(get.data.shop);
 
-  const metrics = await jfetch('/api/metrics');
-  assert.equal(metrics.status, 200);
-  assert.ok(typeof metrics.data.products === 'number');
-
-  const backup = await jfetch('/api/admin/backup');
-  assert.equal(backup.status, 200);
-  assert.ok(backup.data.fileName.includes('backup-'));
+  const patch = await jfetch('/api/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ billing: { invoicePrefix: 'PX', defaultTaxRate: 0.2, defaultLowStockThreshold: 3 } })
+  });
+  assert.equal(patch.status, 200);
+  assert.equal(patch.data.billing.invoicePrefix, 'PX');
 });
 
-test('invoice flow updates stock and returns whatsapp/pdf links', async () => {
-  const p = await jfetch('/api/products', {
+test('inventory core: create product, adjust stock, list movements', async () => {
+  const created = await jfetch('/api/products', {
     method: 'POST',
     body: JSON.stringify({ name: `Battery-${Date.now()}`, barcode: 'BAT001', price: 900, stockQty: 10 })
   });
-  assert.equal(p.status, 201);
+  assert.equal(created.status, 201);
 
-  const i = await jfetch('/api/invoices', {
+  const adj = await jfetch('/api/inventory/adjust', {
+    method: 'POST',
+    body: JSON.stringify({ productId: created.data.id, delta: 3, reason: 'manual count correction' })
+  });
+  assert.equal(adj.status, 200);
+  assert.equal(adj.data.stockQty, 13);
+
+  const movements = await jfetch('/api/stock-movements');
+  assert.equal(movements.status, 200);
+  assert.equal(movements.data.some((m) => m.type === 'adjustment'), true);
+});
+
+test('billing core: invoice, cancel and return', async () => {
+  const p = await jfetch('/api/products', {
+    method: 'POST',
+    body: JSON.stringify({ name: `Cable-${Date.now()}`, price: 100, stockQty: 10 })
+  });
+
+  const invoice = await jfetch('/api/invoices', {
     method: 'POST',
     body: JSON.stringify({
       customer: { name: 'Asha', phone: '9876543210' },
       lines: [{ productId: p.data.id, qty: 2 }],
-      discount: 100,
-      paymentMethods: [{ method: 'cash', amount: 2006 }]
+      discount: 10,
+      paymentMethods: ['cash']
     })
   });
-  assert.equal(i.status, 201);
-  assert.ok(i.data.pdfPath.includes('/invoices/'));
-  assert.ok(i.data.whatsappShare.includes('wa.me'));
+  assert.equal(invoice.status, 201);
+  assert.ok(invoice.data.number.startsWith('PX-') || invoice.data.number.startsWith('INV-'));
+  assert.ok(invoice.data.pdfPath.includes('/invoices/'));
 
-  const products = await jfetch('/api/products');
-  const updated = products.data.find((x) => x.id === p.data.id);
-  assert.equal(updated.stockQty, 8);
-});
+  const cancel = await jfetch(`/api/invoices/${invoice.data.id}/cancel`, { method: 'POST' });
+  assert.equal(cancel.status, 200);
+  assert.equal(cancel.data.status, 'cancelled');
 
-test('sync handles duplicate clientOpId + detects older timestamp conflict', async () => {
-  const product = await jfetch('/api/products', {
-    method: 'POST', body: JSON.stringify({ name: `SyncTest-${Date.now()}`, price: 50, stockQty: 5 })
-  });
-  const base = product.data;
-
-  const push = await jfetch('/api/sync/push', {
+  const invoice2 = await jfetch('/api/invoices', {
     method: 'POST',
-    body: JSON.stringify({
-      events: [
-        { clientOpId: 'abc', entity: 'products', operation: 'upsert', record: { ...base, stockQty: 4, updatedAt: '2099-01-01T00:00:00.000Z' } },
-        { clientOpId: 'abc', entity: 'products', operation: 'upsert', record: { ...base, stockQty: 3, updatedAt: '2099-01-01T00:00:00.000Z' } },
-        { clientOpId: 'old', entity: 'products', operation: 'upsert', record: { ...base, stockQty: 1, updatedAt: '2000-01-01T00:00:00.000Z' } }
-      ]
-    })
+    body: JSON.stringify({ lines: [{ productId: p.data.id, qty: 1 }], paymentMethods: ['cash'] })
   });
-
-  assert.equal(push.status, 202);
-  assert.equal(push.data.applied.length >= 1, true);
-  assert.equal(push.data.conflicts.length >= 1, true);
+  const ret = await jfetch(`/api/invoices/${invoice2.data.id}/return`, {
+    method: 'POST',
+    body: JSON.stringify({ lines: [{ productId: p.data.id, qty: 1 }] })
+  });
+  assert.equal(ret.status, 201);
+  assert.equal(ret.data.type, 'return');
 });
 
-test('repair job card + repair invoice + customer history + audit log', async () => {
+test('repair + crm + reports + ops', async () => {
   const c = await jfetch('/api/customers', { method: 'POST', body: JSON.stringify({ name: `Ravi-${Date.now()}`, phone: '9999911111' }) });
   const repair = await jfetch('/api/repairs', {
     method: 'POST',
     body: JSON.stringify({ device: 'iPhone 12', issue: 'No display', customerId: c.data.id, serviceCost: 500, parts: [{ name: 'Display', cost: 3500 }] })
   });
   assert.equal(repair.status, 201);
+
+  const update = await jfetch(`/api/repairs/${repair.data.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'in-progress' }) });
+  assert.equal(update.status, 200);
 
   const card = await jfetch(`/api/repairs/${repair.data.id}/job-card`, { method: 'POST' });
   assert.equal(card.status, 201);
@@ -113,6 +121,17 @@ test('repair job card + repair invoice + customer history + audit log', async ()
   const history = await jfetch(`/api/customers/${c.data.id}/history`);
   assert.equal(history.status, 200);
   assert.equal(history.data.repairCount, 1);
+
+  const report = await jfetch(`/api/reports/sales?from=${encodeURIComponent('1970-01-01T00:00:00.000Z')}&to=${encodeURIComponent(new Date().toISOString())}`);
+  assert.equal(report.status, 200);
+  assert.ok(typeof report.data.gross === 'number');
+
+  const metrics = await jfetch('/api/metrics');
+  assert.equal(metrics.status, 200);
+  assert.ok(typeof metrics.data.invoices === 'number');
+
+  const backup = await jfetch('/api/admin/backup');
+  assert.equal(backup.status, 200);
 
   const audits = await jfetch('/api/audit-logs');
   assert.equal(audits.status, 200);

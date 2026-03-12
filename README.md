@@ -1,41 +1,89 @@
-# Phoneix Mobiles - Billing, Inventory, Repair Management (v2)
+# Phoneix Mobiles - Billing, Inventory, Repair Management (v3)
 
-Production-hardened modular Node.js system for mobile retail and repair operations.
+Production-ready modular Node.js system for mobile shop operations with full billing, inventory, repairs, CRM, reporting and global settings.
 
-## Architecture
+## Implemented Modules (Core Functionalities)
 
-- Modular backend (`src/lib/*`, `src/routes/*`) with separated config, auth, db, audit, PDF, and domain services.
-- File-backed datastore for local deployability, now with backup/restore and audit trails.
-- Role-based API access via `X-API-Key` (`admin-key`, `cashier-key`, `tech-key` by default).
-- Structured startup logs and operational endpoints.
+### 1) Billing / Invoicing
+- Unified invoice workflow with customer auto-create.
+- Live line-item calculations (subtotal, discount, tax, total).
+- Multi-payment support (single/split methods).
+- Invoice numbering via global settings prefix.
+- Stock deduction at sale time.
+- Invoice PDF generation and WhatsApp share link.
+- Invoice cancellation with stock rollback.
+- Partial/full return invoice creation with stock restock.
 
-## Core Capabilities
+### 2) Repair Management
+- Full repair ticket CRUD.
+- Configurable repair status workflow from global settings.
+- Parts + service total computation.
+- Job card generation.
+- One-click repair-to-invoice conversion.
 
-- Unified invoice flow: customer auto-create, stock-safe line validation, tax/discount totals, payment split validation, stock movement logs.
-- Repair lifecycle: create tickets, job-card generation, one-click repair-to-invoice, status progression.
-- Inventory + CRM: product search by name/SKU/barcode, customer history, low-stock insights.
-- Sync: pull by timestamp, push with LWW conflict resolution and duplicate op suppression via `clientOpId`.
-- Artifacts: standards-compliant minimal PDF invoices and text job cards.
-- Operations: `/api/ready`, `/api/metrics`, `/api/admin/backup`, `/api/admin/restore`, `/api/audit-logs`.
+### 3) Inventory Management
+- Product CRUD, barcode/SKU/name search.
+- Low-stock thresholds per product and default from settings.
+- Manual stock adjustment endpoint with movement log.
+- Stock movement history across sale/return/cancel/adjustment.
 
-## Run
+### 4) CRM
+- Customer CRUD.
+- Customer history endpoint with invoices, returns, repairs and spend summary.
+
+### 5) Reporting
+- Dashboard: inventory/customers/repairs/invoices/open repairs/low stock/gross/returns/net sales.
+- Sales report endpoint for date ranges.
+
+### 6) Global Settings Module
+- Shop profile (name/contact/address/GST/currency/locale).
+- Billing defaults (invoice prefixes, tax rate, payment methods, low-stock default).
+- Repair status workflow and default status.
+- Inventory controls (negative stock rule, low-stock alert flag).
+- WhatsApp template toggle and message template.
+
+### 7) Operations / Security / Reliability
+- Modular backend architecture (`src/lib`, `src/routes`).
+- Role-based API authorization via `X-API-Key`.
+- Audit logs for critical actions.
+- Backup and restore endpoints.
+- Health, readiness, metrics endpoints.
+- Offline sync pull/push with LWW conflict policy and duplicate operation suppression.
+
+## Run Locally
 
 ```bash
 npm run dev
 ```
 
-Open `http://localhost:3000` and use an API key in the UI access field.
+## How to Preview the Application
+
+1. Start the app:
+   ```bash
+   npm run dev
+   ```
+2. Open browser:
+   - `http://localhost:3000`
+3. In the UI, set API key (top Access section):
+   - Admin: `admin-key`
+   - Cashier: `cashier-key`
+   - Technician: `tech-key`
+4. Click **Load Settings** first, then use modules:
+   - Add products
+   - Build invoice lines and complete invoice
+   - Create repair tickets and generate job card / invoice
+   - Use stock adjustment
+   - Refresh dashboard and sales report
 
 ## API Overview
-
-- Health/ops: `GET /api/health`, `GET /api/ready`, `GET /api/metrics`
-- Products: `POST /api/products`, `GET /api/products?q=`, `PATCH/DELETE /api/products/:id`
-- Customers: `POST /api/customers`, `GET /api/customers`, `GET /api/customers/:id/history`
-- Repairs: `POST /api/repairs`, `GET /api/repairs`, `POST /api/repairs/:id/job-card`, `POST /api/repairs/create-invoice`
-- Invoices: `POST /api/invoices`, `GET /api/invoices`
+- Settings: `GET/PATCH /api/settings`
+- Products: `POST/GET/PATCH/DELETE /api/products`, `POST /api/inventory/adjust`
+- Customers: `POST/GET/PATCH/DELETE /api/customers`, `GET /api/customers/:id/history`
+- Repairs: `POST/GET/PATCH/DELETE /api/repairs`, `POST /api/repairs/:id/job-card`, `POST /api/repairs/create-invoice`
+- Invoices: `POST/GET /api/invoices`, `GET /api/invoices/:id`, `POST /api/invoices/:id/cancel`, `POST /api/invoices/:id/return`
+- Reports: `GET /api/dashboard`, `GET /api/reports/sales`
 - Sync: `GET /api/sync/pull`, `POST /api/sync/push`
-- Admin: `GET /api/admin/backup`, `POST /api/admin/restore`, `GET /api/audit-logs`
+- Ops/Admin: `GET /api/health`, `GET /api/ready`, `GET /api/metrics`, `GET /api/admin/backup`, `POST /api/admin/restore`, `GET /api/audit-logs`
 
 ## Deployment
-
-Deploy as a Node service; persist `data/` volume for DB, backups, invoice PDFs, and job cards.
+Persist `data/` volume in production to retain DB, backups, invoice PDFs, and job cards.
